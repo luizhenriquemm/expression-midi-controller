@@ -5,27 +5,20 @@
 
 const char* ap_ssid     = "EXP-MIDI-CONTROLLER";
 const char* ap_password = "always42";
-
 IPAddress ap_local_ip(192, 168, 1, 1);
 IPAddress ap_gateway_ip(192, 168, 1, 254);
 IPAddress ap_network_mask(255, 255, 255, 0);
-
 long wifi_time_counter = 0;
-bool wifi_is_on = true;
-
+bool wifi_is_on = false;
 WiFiServer server(80);
 String header;
-
-
-
-
 
 // Source https://www.arduinoslovakia.eu/blog/2018/6/arduino-a-midi-out?lang=en
 
 #define PIN_FOOTSWITCH 22 // D22 HIGH or LOW
 #define PIN_POTENTIOMETER 34 // D34, ADC1, 0 to 3v3, 0 to 4096. See more at https://lastminuteengineers.com/esp32-basics-adc/
 
-// MIDI_CREATE_DEFAULT_INSTANCE();
+MIDI_CREATE_DEFAULT_INSTANCE();
 
 const int numLeituras = 50; // Número de leituras para a média
 int leituras[numLeituras];   // Array para armazenar as leituras
@@ -35,41 +28,62 @@ int media = 0;
 int ultimoValor = 0;
 int mediaCorrigida = 0;
 
+int footswitch = 0;
+int lastFootswitch = 0;
+
 void setup() {
-  Serial.begin(115200);
+  // Serial.begin(115200);
 
   pinMode(PIN_FOOTSWITCH, INPUT_PULLUP);
   pinMode(PIN_POTENTIOMETER, INPUT_PULLUP);
 
-  WiFi.softAPConfig(ap_local_ip, ap_gateway_ip, ap_network_mask);
-  WiFi.softAPsetHostname("exp-midi-controller.net");
-  WiFi.softAP(ap_ssid, ap_password);
-  server.begin();
+  // WiFi.softAPConfig(ap_local_ip, ap_gateway_ip, ap_network_mask);
+  // WiFi.softAPsetHostname("exp-midi-controller.net");
+  // WiFi.softAP(ap_ssid, ap_password);
+  // server.begin();
 
-  // MIDI.begin(MIDI_CHANNEL_OMNI);
+  MIDI.begin(MIDI_CHANNEL_OMNI);
 
   for (int i = 0; i < numLeituras; i++) {
     leituras[i] = 0;
   }
+
+  footswitch, lastFootswitch = digitalRead(PIN_FOOTSWITCH);
 }
 
 void loop() {
+  // Pot read
   soma = soma - leituras[indice];
   leituras[indice] = analogRead(PIN_POTENTIOMETER);
   soma = soma + leituras[indice];
   indice = (indice + 1) % numLeituras;
   media = soma / numLeituras;
-  mediaCorrigida = map(media, 0, 4096, 0, 127);
+  mediaCorrigida = map(media, 0, 4095, 0, 127);
 
   if (mediaCorrigida != ultimoValor) {
-    // MIDI.sendControlChange(48, mediaCorrigida, 1);
+    MIDI.sendControlChange(11, mediaCorrigida, 1);
 
     ultimoValor = mediaCorrigida;
   }
   else {
-    delay(10);
+    // nothing
   }
 
+
+  //Switch read
+  footswitch = digitalRead(PIN_FOOTSWITCH);
+  if (lastFootswitch != footswitch) {
+    if (footswitch == 1) {
+      MIDI.sendControlChange(48, 127, 1);
+    }
+    else {
+      MIDI.sendControlChange(48, 0, 1);
+    }
+    lastFootswitch = footswitch;
+  }
+
+
+  // WiFi stuff
   if (WiFi.softAPgetStationNum() >= 1) {
     wifi_time_counter = millis();
   }
@@ -77,7 +91,7 @@ void loop() {
   if (wifi_is_on && (millis() - wifi_time_counter >= 60000)) { // More than 1 minute without any clients, turnoff wifi
     WiFi.softAPdisconnect(true);
     wifi_is_on = false;
-    Serial.print("wifi is off!");
+    // Serial.print("wifi is off!");
     delay(100);
   }
 
@@ -89,7 +103,7 @@ void loop() {
       while (client.connected()) {  
         if (client.available()) {
           char c = client.read();
-          Serial.write(c); 
+          // Serial.write(c); 
           header += c;
 
           if (c == '\n') { 
@@ -129,13 +143,7 @@ void loop() {
       client.stop();
     }
   }
-
-  // delay(1000);
-  // MIDI.read();
-
-  // Serial.print("wifi_time_counter");
-  // Serial.println(wifi_time_counter);
-  // Serial.println(millis());
-  // Serial.println(wifi_time_counter + 60000);
+  
+  delay(1);
 
 }
