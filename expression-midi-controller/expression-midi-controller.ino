@@ -1,6 +1,9 @@
 #include <MIDI.h>
 #include <WiFi.h>
 
+const int midi_minimal_interval_ms = 10; // For pot values only. Never a message will be send if the last one is not at least this time older.
+const int shure_shot_interval_ms = 20;  // For pot values only. After the last value is sent, a last message (shure shot) will be send after this time.
+
 // Source https://randomnerdtutorials.com/esp32-web-server-arduino-ide/
 
 const char* ap_ssid     = "EXP-MIDI-CONTROLLER";
@@ -18,21 +21,25 @@ String header;
 #define PIN_FOOTSWITCH 22 // D22 HIGH or LOW
 #define PIN_POTENTIOMETER 34 // D34, ADC1, 0 to 3v3, 0 to 4096. See more at https://lastminuteengineers.com/esp32-basics-adc/
 
-MIDI_CREATE_DEFAULT_INSTANCE();
+HardwareSerial SerialMidi(2);  // 2 para UART2
+MIDI_CREATE_INSTANCE(HardwareSerial, SerialMidi, MIDI);
+// MIDI_CREATE_DEFAULT_INSTANCE();
 
-const int numLeituras = 50; // Número de leituras para a média
-int leituras[numLeituras];   // Array para armazenar as leituras
+const int num_leituras = 50; // Número de leituras para a média
+int leituras[num_leituras];   // Array para armazenar as leituras
 int soma = 0;
 int indice = 0;
 int media = 0;
-int ultimoValor = 0;
-int mediaCorrigida = 0;
+int ultimo_valor = 0;
+int media_corrigida = 0;
+int last_pot_value_sent_time;
+bool shure_shot_is_done = false;
 
 int footswitch = 0;
-int lastFootswitch = 0;
+int last_footswitch = 0;
 
 void setup() {
-  // Serial.begin(115200);
+  Serial.begin(115200);
 
   pinMode(PIN_FOOTSWITCH, INPUT_PULLUP);
   pinMode(PIN_POTENTIOMETER, INPUT_PULLUP);
@@ -42,13 +49,17 @@ void setup() {
   // WiFi.softAP(ap_ssid, ap_password);
   // server.begin();
 
+  SerialMidi.begin(31250, SERIAL_8N1, 16, 17); // 31250 é a taxa de MIDI, pinos RX e TX para UART1
   MIDI.begin(MIDI_CHANNEL_OMNI);
 
-  for (int i = 0; i < numLeituras; i++) {
+  for (int i = 0; i < num_leituras; i++) {
     leituras[i] = 0;
   }
 
-  footswitch, lastFootswitch = digitalRead(PIN_FOOTSWITCH);
+  footswitch, last_footswitch = digitalRead(PIN_FOOTSWITCH);
+  last_pot_value_sent_time = millis();
+
+  Serial.println("Boot done.");
 }
 
 void loop() {
@@ -56,30 +67,49 @@ void loop() {
   soma = soma - leituras[indice];
   leituras[indice] = analogRead(PIN_POTENTIOMETER);
   soma = soma + leituras[indice];
-  indice = (indice + 1) % numLeituras;
-  media = soma / numLeituras;
-  mediaCorrigida = map(media, 0, 4095, 0, 127);
+  indice = (indice + 1) % num_leituras;
+  media = soma / num_leituras;
+  media_corrigida = map(media, 0, 4095, 0, 127);
 
-  if (mediaCorrigida != ultimoValor) {
-    MIDI.sendControlChange(11, mediaCorrigida, 1);
+  if (media_corrigida != ultimo_valor) {
+    if (millis() - last_pot_value_sent_time >= midi_minimal_interval_ms) {
+      MIDI.sendControlChange(11, media_corrigida, 1);
+      last_pot_value_sent_time = millis();
+      shure_shot_is_done = false;
 
-    ultimoValor = mediaCorrigida;
+      ultimo_valor = media_corrigida;
+    }
   }
   else {
     // nothing
   }
 
+  if (!shure_shot_is_done && (millis() - last_pot_value_sent_time >= shure_shot_interval_ms)) {
+      MIDI.sendControlChange(11, media_corrigida, 1);
+      last_pot_value_sent_time = millis();
+      shure_shot_is_done = true;
+  }
+
 
   //Switch read
   footswitch = digitalRead(PIN_FOOTSWITCH);
-  if (lastFootswitch != footswitch) {
+  if (last_footswitch != footswitch) {
     if (footswitch == 1) {
       MIDI.sendControlChange(48, 127, 1);
     }
     else {
       MIDI.sendControlChange(48, 0, 1);
     }
-    lastFootswitch = footswitch;
+    last_footswitch = footswitch;
+  }
+
+  
+  // Midi in
+  if (MIDI.read()) {
+    MIDI.send(MIDI.getType(),
+              MIDI.getData1(),
+              MIDI.getData2(),
+              MIDI.getChannel());
   }
 
 
@@ -143,6 +173,7 @@ void loop() {
       client.stop();
     }
   }
+  
   
   delay(1);
 
