@@ -1,8 +1,18 @@
 #include <MIDI.h>
 #include <WiFi.h>
 
-const int midi_minimal_interval_ms = 10; // For pot values only. Never a message will be send if the last one is not at least this time older.
-const int shure_shot_interval_ms = 20;  // For pot values only. After the last value is sent, a last message (shure shot) will be send after this time.
+// Midi configuration
+const int midi_out_channel = 1;
+const int midi_ftsw_cc_id = 48;
+const int midi_ftsw_on_value = 127;
+const int midi_ftsw_off_value = 0;
+const int midi_pot_cc_id = 11;
+const int midi_pot_max_value = 127;
+const int midi_pot_min_value = 0;
+
+const int midi_minimal_interval_ms = 2; // Never a message will be send if the last one is not at least this time older.
+const int shure_shot_interval_ms = 10;  // For pot values only. After the last value is sent, a last message (shure shot) will be send after this time.
+const int max_pot_value_step = 4;       // For pot values only. Defines the max step between sends.
 
 // Source https://randomnerdtutorials.com/esp32-web-server-arduino-ide/
 
@@ -52,9 +62,12 @@ void setup() {
   SerialMidi.begin(31250, SERIAL_8N1, 16, 17); // 31250 é a taxa de MIDI, pinos RX e TX para UART1
   MIDI.begin(MIDI_CHANNEL_OMNI);
 
+  delay(midi_minimal_interval_ms);
+  int t = analogRead(PIN_POTENTIOMETER);
   for (int i = 0; i < num_leituras; i++) {
-    leituras[i] = 0;
+    leituras[i] = t;
   }
+  soma = t * num_leituras;
 
   footswitch, last_footswitch = digitalRead(PIN_FOOTSWITCH);
   last_pot_value_sent_time = millis();
@@ -64,19 +77,46 @@ void setup() {
 
 void loop() {
   // Pot read
+  if (soma > (4095 * num_leituras)) soma = 4095 * num_leituras;
+  else if (soma < 0) soma = 0;
+
   soma = soma - leituras[indice];
   leituras[indice] = analogRead(PIN_POTENTIOMETER);
   soma = soma + leituras[indice];
   indice = (indice + 1) % num_leituras;
   media = soma / num_leituras;
-  media_corrigida = map(media, 0, 4095, 0, 127);
+  media_corrigida = map(media, 0, 4095, midi_pot_min_value, midi_pot_max_value);
+
+  // Serial.println("soma: " + String(soma) + ", num_leituras: " + String(num_leituras) + ", media: " + String(media) + ", media_corrigida: " + String(media_corrigida));
+  // Serial.print("leituras");
+  // for(int i = 0; i < num_leituras; i++)
+  // {
+  //   Serial.print(" ");
+  //   Serial.print(leituras[i]);
+  // }
+  // Serial.println(" .");
 
   if (media_corrigida != ultimo_valor) {
     if (millis() - last_pot_value_sent_time >= midi_minimal_interval_ms) {
-      MIDI.sendControlChange(11, media_corrigida, 1);
+      if (abs(media_corrigida - ultimo_valor) > max_pot_value_step) {
+        if (media_corrigida > ultimo_valor) {  // Greater
+          for (int i = ultimo_valor + max_pot_value_step; i <= media_corrigida; i += max_pot_value_step) {
+            MIDI.sendControlChange(midi_pot_cc_id, i, midi_out_channel);
+            delay(midi_minimal_interval_ms);
+          }
+        }
+        else {  // Lesser
+          for (int i = ultimo_valor - max_pot_value_step; i >= media_corrigida; i -= max_pot_value_step) {
+            MIDI.sendControlChange(midi_pot_cc_id, i, midi_out_channel);
+            delay(midi_minimal_interval_ms);
+          }
+        }
+      }
+      else { // Less then max_pot_value_step, can be send normally
+        MIDI.sendControlChange(midi_pot_cc_id, media_corrigida, midi_out_channel);
+      }
       last_pot_value_sent_time = millis();
       shure_shot_is_done = false;
-
       ultimo_valor = media_corrigida;
     }
   }
@@ -84,8 +124,9 @@ void loop() {
     // nothing
   }
 
+  // Pot shure shot logic
   if (!shure_shot_is_done && (millis() - last_pot_value_sent_time >= shure_shot_interval_ms)) {
-      MIDI.sendControlChange(11, media_corrigida, 1);
+      MIDI.sendControlChange(midi_pot_cc_id, ultimo_valor, midi_out_channel);
       last_pot_value_sent_time = millis();
       shure_shot_is_done = true;
   }
@@ -95,10 +136,12 @@ void loop() {
   footswitch = digitalRead(PIN_FOOTSWITCH);
   if (last_footswitch != footswitch) {
     if (footswitch == 1) {
-      MIDI.sendControlChange(48, 127, 1);
+      MIDI.sendControlChange(midi_ftsw_cc_id, midi_ftsw_on_value, midi_out_channel);
+      delay(midi_minimal_interval_ms);
     }
     else {
-      MIDI.sendControlChange(48, 0, 1);
+      MIDI.sendControlChange(midi_ftsw_cc_id, midi_ftsw_off_value, midi_out_channel);
+      delay(midi_minimal_interval_ms);
     }
     last_footswitch = footswitch;
   }
@@ -173,8 +216,4 @@ void loop() {
       client.stop();
     }
   }
-  
-  
-  delay(1);
-
 }
